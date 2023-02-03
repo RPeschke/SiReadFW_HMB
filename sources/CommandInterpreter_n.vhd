@@ -20,6 +20,8 @@ library ieee;
     use work.GigabitEthPkg.all;
     use work.BMD_definitions.all; --need to include BMD_definitions in addition to work.all
 
+    use work.axi_stream_s32.all;
+
 entity CommandInterpreter is
     generic (
         REG_ADDR_BITS_G : integer := 16;
@@ -27,7 +29,7 @@ entity CommandInterpreter is
         TIMEOUT_G       : integer := 125000;
         TIMEOUT_G1       : integer := 536870912;
         GATE_DELAY_G    : time := 1 ns;
-		num_DC          : integer := 0; -- 3
+        num_DC          : integer := 0; -- 3
         packets         : integer := 8;
         data_in_packet        : integer := 8;
         chls       : integer := 1
@@ -35,7 +37,7 @@ entity CommandInterpreter is
     port (
         -- User clock and reset
         usrClk      : in  sl;
-		dataClk	   : in  sl;
+        dataClk	   : in  sl;
         usrRst      : in  sl;
         -- Incoming data from PC
         rxData      : in  slv(31 downto 0);
@@ -47,15 +49,15 @@ entity CommandInterpreter is
         txDataValid : out sl;
         txDataLast  : out sl;
         txDataReady : in  sl;
-		--DC Comm signals
-		serialClkLck : in slv(num_DC downto 0);
-		trigLinkSync : in slv(num_DC downto 0);
-		DC_CMD 		 : out slv(31 downto 0) := (others => '0');
-		QB_WrEn      : out slv(num_DC downto 0);
-		QB_RdEn      : out slv(num_DC downto 0);
-		DC_RESP		 : in slv(31 downto 0);
-		DC_RESP_VALID: in slv(num_DC downto 0);
-		EVNT_FLAG    : in sl;
+        --DC Comm signals
+        serialClkLck : in slv(num_DC downto 0);
+        trigLinkSync : in slv(num_DC downto 0);
+        DC_CMD 		 : out slv(31 downto 0) := (others => '0');
+        QB_WrEn      : out slv(num_DC downto 0);
+        QB_RdEn      : out slv(num_DC downto 0);
+        DC_RESP		 : in slv(31 downto 0);
+        DC_RESP_VALID: in slv(num_DC downto 0);
+        EVNT_FLAG    : in sl;
         -- Register interfaces
         regAddr     : out slv(REG_ADDR_BITS_G-1 downto 0);
         regWrData   : out slv(REG_DATA_BITS_G-1 downto 0);
@@ -63,9 +65,9 @@ entity CommandInterpreter is
         regReq      : out sl;
         regOp       : out sl;
         regAck      : in  sl;
-		--debug ports
-		ldQBLink 	: out sl;
-		cmd_int_state : out slv(4 downto 0)
+        --debug ports
+        ldQBLink 	: out sl;
+        cmd_int_state : out slv(4 downto 0)
     );
 end CommandInterpreter;
 
@@ -76,7 +78,9 @@ architecture rtl of CommandInterpreter is
                            COMMAND_TARGET_S,COMMAND_ID_S,COMMAND_TYPE_S,
                            COMMAND_DATA_S,COMMAND_CHECKSUM_S,READ_S, READ_DATA, WRITE_S,
                            READ_RESPONSE_S,WRITE_RESPONSE_S,PACKET_CHECKSUM_S, SENDTRIG_S); 
-                           
+
+
+    type StateType_2     is (IDLE_S, header_s, PING_S,  READ_S , READ_RESPONSE_S, WRITE_S ,WRITE_RESPONSE_S  );                            
     -- , PING_S,PING_RESPONSE_S, ERR_RESPONSE_S, CHECK_MORE_S,DUMP_S
 
 
@@ -95,8 +99,8 @@ architecture rtl of CommandInterpreter is
         wordsLeft   : slv(31 downto 0);
         wordOutCnt  : slv(7 downto 0);
         checksum    : slv(31 downto 0);
-		deviceID 	: slv(31 downto 0);
-		commandType : slv(31 downto 0);
+        deviceID 	: slv(31 downto 0);
+        commandType : slv(31 downto 0);
         command     : slv(31 downto 0);
         commandId   : slv(23 downto 0);
         noResponse  : sl;
@@ -108,7 +112,7 @@ architecture rtl of CommandInterpreter is
     end record RegType;
 
 
-	constant REG_INIT_C : RegType := (
+    constant REG_INIT_C : RegType := (
         state       => IDLE_S,
         regAddr     => (others => '0'),
         regWrData   => (others => '0'),
@@ -123,8 +127,8 @@ architecture rtl of CommandInterpreter is
         wordsLeft   => (others => '0'),
         wordOutCnt  => (others => '0'),
         checksum    => (others => '0'),
-		deviceID    => (others => '0'),
-		commandType => (others => '0'),
+        deviceID    => (others => '0'),
+        commandType => (others => '0'),
         command     => (others => '0'),
         commandId   => (others => '0'),
         noResponse  => '0',
@@ -136,14 +140,14 @@ architecture rtl of CommandInterpreter is
     );
 
     signal r   : RegType := REG_INIT_C;
-	-- signal t   : RegType := REG_INIT_C;
+    -- signal t   : RegType := REG_INIT_C;
     signal rin : RegType;
-	-- signal tin : RegType;
-	signal loadQB : sl := '0';
+    -- signal tin : RegType;
+    signal loadQB : sl := '0';
     signal data_flag : sl := '0';
-	signal QB_loadReg : Word32Array(2 downto 0);
-	signal DC_cmdRespReq : slv(num_DC downto 0);
-	signal start_load : sl := '0';
+    signal QB_loadReg : Word32Array(2 downto 0);
+    signal DC_cmdRespReq : slv(num_DC downto 0);
+    signal start_load : sl := '0';
     signal start_load1 : sl := '0';
     signal DC_RESP_VALID_data : slv(num_DC downto 0);
     signal DC_RESP_data		: slv(31 downto 0);
@@ -174,18 +178,18 @@ architecture rtl of CommandInterpreter is
     -- constant ERR_BIT_COMM_CS_C : slv(31 downto 0) := x"00000010";
     -- constant ERR_BIT_CS_C      : slv(31 downto 0) := x"00000020";
     -- constant ERR_BIT_TIMEOUT_C : slv(31 downto 0) := x"00000040";
-	-- constant QBLINK_FAILURE_C  : slv(31 downto 0) := x"00000500"; --link not up yet error
+    -- constant QBLINK_FAILURE_C  : slv(31 downto 0) := x"00000500"; --link not up yet error
 
-	constant wordDC				: slv(23 downto 0) := x"0000DC"; --command target is one or more DC
-	constant broadcastDC       : slv(7 downto 0)  := x"0A"; --command target is all DCs
+    constant wordDC				: slv(23 downto 0) := x"0000DC"; --command target is one or more DC
+    constant broadcastDC       : slv(7 downto 0)  := x"0A"; --command target is all DCs
     signal wordScrodRevC      : slv(31 downto 0)  := (others=> '0');
 
-	signal stateNum : slv(4 downto 0);
-	signal dc_id : integer := 0;
-	-- added signal to monitor wordsleft 15 oct 2020: Shivang
+    signal stateNum : slv(4 downto 0);
+    signal dc_id : integer := 0;
+    -- added signal to monitor wordsleft 15 oct 2020: Shivang
 --	signal wordsleft_i  : std_logic_vector(31 downto 0) := (others=> '0');
-	signal dc_ack : sl := '0';
-	signal dc_ack1 : sl := '0';
+    signal dc_ack : sl := '0';
+    signal dc_ack1 : sl := '0';
     -- attribute keep : string;
     -- attribute keep of stateNum : signal is "true";
     signal s_axis_tready : sl := '1';
@@ -196,21 +200,135 @@ architecture rtl of CommandInterpreter is
     -- signal txDataValid_i : sl :=  '0';
     -- signal txDataReady_i : sl :=  '0';
 
-	attribute mark_debug : string;
+    attribute mark_debug : string;
     attribute mark_debug of loadQB : signal is "true";
-	attribute mark_debug of stateNum : signal is "true";
+    attribute mark_debug of stateNum : signal is "true";
 --	attribute mark_debug of wordsleft_i : signal is "true";
+------------------------------------------------------------------------------------------------------------------------
+    signal rx : axi_stream_32_slave := axi_stream_32_slave_null;
+    signal dc_rx : axi_stream_32_slave := axi_stream_32_slave_null;
+    signal tx : axi_stream_32_master := axi_stream_32_master_null;
+
+    type header_t is record 
+        packet_size:  slv(31 downto 0);
+        packet_type: slv(31 downto 0);
+        command_target: slv(31 downto 0);
+        command_id: slv(23 downto 0);
+        no_response : sl;
+        command_type: slv(31 downto 0);
+        command_data: slv(31 downto 0);
+        dc_id : integer;
+        loadQB : std_logic;
+    end record;
+
+    constant header_t_null :  header_t := (
+        packet_size => (others => '0'),
+        packet_type => (others => '0'),
+        command_target => (others => '0'),
+        command_id => (others => '0'),
+        no_response  => '0',
+        command_type => (others => '0'),
+        command_data => (others => '0'),
+        dc_id => 0,
+        loadQB => '0'
+    );
+
+
+
+    pure function get_dc(command_target : std_logic_vector) return integer is
+        variable ret : integer := 0;
+    begin
+        if (command_target(31 downto 8) = wordDC) and (command_target(7 downto 0) /= broadcastDC) then 
+            ret := conv_integer(unsigned(command_target(7 downto 0)));
+        elsif (command_target(7 downto 0) = broadcastDC) then
+            ret := conv_integer(unsigned(broadcastDC));
+        end if;
+        return ret;
+
+    end function;
+
+    
+    pure function get_loadQB(command_target : std_logic_vector) return sl is
+    begin
+        if command_target = wordScrodRevC    then 
+            return '0';
+        elsif (command_target(31 downto 8) = wordDC) and (command_target(7 downto 0) /= broadcastDC) then 
+            return '1';
+        elsif (command_target(7 downto 0) = broadcastDC) then
+            return '1';
+        end if;
+        return  '0';
+    end function;
+
+    procedure fill_header(signal self : inout header_t ; index : in integer ; data: in std_logic_vector )  is 
+        constant packet_size_index: integer := 0;
+        constant packet_type_index: integer := 1;
+        constant command_target_index: integer := 2;
+        constant command_id_index: integer := 3;
+        constant command_type_index: integer := 4;
+        constant command_data_index: integer := 5;
+    begin 
+        if index = packet_size_index then 
+            self.packet_size <= data(self.packet_size'range);
+        elsif index = packet_type_index then 
+            self.packet_type <= data(self.packet_type'range);
+        elsif index = command_target_index then 
+            self.command_target <= data(self.command_target'range);
+            self.dc_id  <= get_dc(data);
+            self.loadQB <= get_loadQB(data);
+        elsif index = command_id_index then 
+            self.command_id  <= data(self.command_id'range);
+            self.no_response <= data (31);
+        elsif index = command_type_index then 
+            self.command_type <= data(self.command_type'range);
+        elsif index = command_data_index then 
+            self.command_data <= data(self.command_data'range);
+        end if;
+
+
+
+    end procedure;
+
+    pure function get_header_slice(self : header_t ; index : in integer ) return std_logic_vector is
+       variable  ret : slv(31 downto 0) := (others => '0');
+    begin
+        
+         if index = 0 then 
+            ret := WORD_HEADER_C;
+        elsif index = 1 then 
+            ret :=  x"00000006";
+            if self.command_type = WORD_PING_C then 
+                ret :=  x"00000005";
+            end if;
+
+        elsif index = 2 then 
+            ret := WORD_ACK_C;
+        elsif index = 3 then 
+            ret := self.command_target;
+        elsif index = 4 then 
+            ret :=  x"00" & self.command_id;
+        elsif index = 5 then 
+            ret := self.command_type ; 
+        end if;
+
+        return  ret;
+    end function;
+
+
+
+    signal i_header : header_t := header_t_null;
+    signal i_header_counter : integer := 0;
 
 begin
-	cmd_int_state <= stateNum;
-	ldQBLink <= loadQB;
+    cmd_int_state <= stateNum;
+    ldQBLink <= loadQB;
     DC_RESP_data <= DC_RESP when data_flag = '1' else (others =>'0');
     DC_RESP_VALID_data <= DC_RESP_VALID when data_flag = '1' else  "0";
     -- txData <= txData_i;
     -- txDataValid <= txDataValid_i;
     -- txDataReady_i <= txDataReady;
 --	wordsleft_i <= r.wordsLeft;
-	
+    
     stateNum <= "00000" when r.state = IDLE_S else             -- 0 x00
                 "00001" when r.state = PACKET_SIZE_S else      -- 1 x01
                 "00010" when r.state = PACKET_TYPE_S else      -- 2 x02
@@ -259,6 +377,360 @@ begin
     --     end if;
     -- end process;
 
+
+
+    rx.m2s.data <= rxData;
+    rx.m2s.valid <= rxDataValid;
+    rx.m2s.last <= rxDataLast;
+    rxDataReady <= rx.s2m.ready;
+
+    tx.s2m.ready <= txDataReady;
+    txData <= tx.m2s.data;
+    txDataValid <= tx.m2s.valid;
+    txDataLast <= tx.m2s.last;
+
+    dc_rx.m2s.valid <= tvalid_fifo;
+    dc_rx.m2s.data <= tdata_fifo;
+    dc_rx.m2s.last <= '0';
+    tready_fifo <= dc_rx.s2m.ready;
+
+    process(usrClk) is 
+        variable rx_buff : std_logic_vector(31 downto 0) := (others => '0');
+        variable tx_buff : std_logic_vector(31 downto 0) := (others => '0');
+        variable v_ready_to_send: std_logic := '0';
+        variable v_state : StateType_2 := IDLE_S;
+        variable v_wordsLeft : std_logic_vector(31 downto 0) := (others => '0');
+        variable v_device_id : std_logic_vector(31 downto 0) := (others => '0');
+        variable v_commandId   : slv(23 downto 0);
+        variable v_noResponse  : sl;
+
+        variable   dataCount  : integer  range 0 to 21;
+        variable  packetCount : integer  range 0 to 9; 
+        variable v_timeoutCnt1  : slv(31 downto 0); 
+        variable v_command  : slv(31 downto 0);
+        variable v_regAddr  : slv(15 downto 0);
+        variable v_regWrData  : slv(15 downto 0);
+        variable v_wordOutCnt : std_logic_vector(7 downto 0);
+        variable v_regRdData_buffer :slv(REG_DATA_BITS_G-1 downto 0);
+    begin 
+    if rising_edge(usrClk) then 
+        pull(rx);
+        pull(dc_rx);
+        pull(tx);
+        regReq  <= '0';
+        DC_cmdRespReq <= (others =>'0');
+        tx_buff := (others =>'0');
+        v_ready_to_send := '0';
+        if i_header.command_type = WORD_PING_C then 
+            v_state := PING_S;
+        end if;
+        v_timeoutCnt1   := v_timeoutCnt1   +1;
+        if v_timeoutCnt1 = TIMEOUT_G then 
+            v_state    := IDLE_S; 
+        end if;
+                    
+
+        case (v_state) is 
+            when IDLE_S => 
+                i_header_counter <= 0;
+                i_header <= header_t_null;
+                v_wordOutCnt := (others =>'0');
+                v_regRdData_buffer:= (others =>'0');
+                if isReceivingData(rx)  then 
+                    v_timeoutCnt1 := 0;
+                    read_data(rx, rx_buff);
+                    if rx_buff = WORD_HEADER_C and not endOfStream(rx) then 
+                        v_state := header_s;
+                    end if;
+                end if;
+            when header_s => 
+
+                if isReceivingData(rx)  then 
+                    v_timeoutCnt1 := 0;
+                    read_data(rx, rx_buff);
+                    fill_header(i_header , i_header_counter ,rx_buff);
+                    i_header_counter <=  i_header_counter+1;
+                    if endOfStream(rx) then 
+                        v_state := IDLE_S;
+                    end if;
+                   
+                    if i_header_counter = 5 then 
+                        regAddr  <= rx_buff(15 downto 0);
+                        v_regAddr := rx_buff(15 downto 0);
+                        regWrData <= rx_buff(31 downto 16);
+
+                        if i_header.command_type  = WORD_READ_C then 
+                            v_state := READ_S;
+                        elsif i_header.command_type  = WORD_WRITE_C then                             
+                            v_state := WRITE_S;
+                        end if;
+
+                    end if;
+
+                end if;
+
+            when PING_S => 
+                
+                 if i_header.no_response  = '1' then
+                    v_state := IDLE_S;
+                else
+                    if i_header.loadQB = '1' then
+                        if i_header.dc_id /= broadcastDC then
+                            if serialClkLck(i_header.dc_id-1) = '1' and trigLinkSync(i_header.dc_id-1) = '1' then --check if QBLink is up (hardcoded)
+                                v_state    := READ_RESPONSE_S;
+                            else
+                                v_state := IDLE_S;
+                            end if;
+                        end if;
+                    else
+                        v_state    := READ_RESPONSE_S;
+                    end if;
+                end if;
+
+
+
+
+            when READ_S =>
+
+                
+                if i_header.loadQB = '1' then -- if reading DC, listen to QBLink
+                    if i_header.dc_id /= broadcastDC then --IF not broadcasting to all DCs
+                        DC_cmdRespReq(i_header.dc_id-1) <= '1';
+                        if DC_RESP_VALID(i_header.dc_id-1) = '1' then --wait for DC to send register data
+                            --do not use v.regRdData to collect readback data
+                            if i_header.no_response = '1' then --if noResponse setting on, skip response to PC
+                                v_state := IDLE_S; --CHECK_MORE_S, Mudit
+                            else --if noResponse setting off, send Register data in response to PC
+                                v_state    := READ_RESPONSE_S;
+                            end if;
+                        end if;
+
+                    end if; 
+                else  --if reading SCROD register:
+                    regOp      <= '0'; -- set Registers to read mode
+                    regReq     <= '1'; --request operation
+                    if (regAck = '1') then
+                        v_regRdData_buffer := regRdData;
+                        v_state    := READ_RESPONSE_S;
+                    end if;
+                end if;
+
+            when READ_RESPONSE_S =>
+                
+                if i_header.loadQB ='0' and regAck = '0'   then
+                    tx_buff :=  v_regRdData_buffer& v_regAddr;
+                    v_ready_to_send := '1';
+                elsif i_header.loadQB  = '1' and i_header.dc_id /= broadcastDC  then
+                    tx_buff :=  DC_RESP;
+                    v_ready_to_send := '1';
+                elsif i_header.command_type = WORD_PING_C then 
+                    v_ready_to_send := '1';
+                    tx_buff :=  (others =>'0');
+                end if;
+
+                if  ready_to_send(tx) and v_ready_to_send ='1' then 
+                    v_timeoutCnt1 := 0;
+                    send_data(tx, get_header_slice(i_header, v_wordOutCnt));
+                    if v_wordOutCnt = 5 then 
+                        send_data(tx, tx_buff );
+                    elsif v_wordOutCnt >= 6 then 
+                        Send_end_Of_Stream(tx);
+                        v_state      := IDLE_S; --CHECK_MORE_S, Mudit
+                    end if;
+                    v_wordOutCnt := v_wordOutCnt + 1;
+                end if;
+
+
+
+
+            when WRITE_S => --TEMP allow cmd interpreter to write to both SCROD and DC registers simulataneously to test dual functionality
+                
+                if (loadQB = '1') and (dc_id /= broadcastDC) then --if writing to DC: wait for them to repeat correct address
+                    DC_cmdRespReq(dc_id-1) <= '1';
+                    if DC_RESP(15 downto 0) = r.regAddr then --write operation is successful if DC repeats address, even if simultaneous SCROD register operation fails.
+                        if r.noResponse = '1' then --skip response to PC if noResponse setting is on
+                            v.state := IDLE_S; --CHECK_MORE_S, Mudit
+                        else
+                            v.checksum := (others => '0');
+                            v.state    := WRITE_RESPONSE_S;
+                        end if;
+                    elsif r.timeoutCnt = TIMEOUT_G then --if the DC does not repeat register before timeout, error is raised (even if SCROD register is written successfully).
+                        -- v.errFlags := r.errFlags + ERR_BIT_TIMEOUT_C; --Mudit
+                        v.state    := IDLE_S; --ERR_RESPONSE_S, Mudit
+                    end if;
+
+                elsif (loadQB = '1') and (dc_id = broadcastDC) then
+                    DC_cmdRespReq(num_DC downto 0) <= (others => '1');
+                    if (DC_RESP(15 downto 0) = r.regAddr) then
+                        if r.noResponse = '1' then --skip response to PC if noResponse setting is on
+                            v.state := IDLE_S; --CHECK_MORE_S, Mudit
+                        else
+                            v.checksum := (others => '0');
+                            v.state    := WRITE_RESPONSE_S;
+                        end if;
+                    elsif r.timeoutCnt = TIMEOUT_G then --if the DC does not repeat register before timeout, error is raised (even if SCROD register is written successfully).
+                        -- v.errFlags := r.errFlags + ERR_BIT_TIMEOUT_C; --Mudit
+                        v.state    := IDLE_S; --ERR_RESPONSE_S, Mudit
+                    end if;
+                    -----------------------------
+                else
+                    v.regOp      := '1'; --enable write to SCROD Register
+                    v.regReq     := '1'; --start writing
+                    if (regAck = '1') then --if not reading DC, make sure SCROD register write was successful.
+                        v.regReq    := '0';
+                        if r.noResponse = '1' then
+                            v.state := IDLE_S; --CHECK_MORE_S, Mudit
+                        else
+                            v.checksum := (others => '0');
+                            v.state    := WRITE_RESPONSE_S;
+                        end if;
+                    elsif r.timeoutCnt = TIMEOUT_G then
+                        -- v.errFlags := r.errFlags + ERR_BIT_TIMEOUT_C; --Mudit
+                        v.state    := IDLE_S; --ERR_RESPONSE_S, Mudit
+                    end if;
+                end if;
+        end case;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        case(v_state) is
+            when IDLE_S =>
+                v_wordsLeft := ( others => '0');
+                v_device_id := ( others => '0');
+                v_commandId := ( others => '0');
+                v_noResponse := '0';
+                dataCount :=0;
+                packetCount :=0;
+                v_timeoutCnt1   := (others =>'0');
+                v_command  := (others =>'0');
+                v_regAddr  := (others =>'0');
+                v_regWrData:= (others =>'0');
+                if isReceivingData(rx)  then 
+                    read_data(rx, rx_buff);
+                    if rx_buff = WORD_HEADER_C and not endOfStream(rx) then 
+                        v_state := PACKET_SIZE_S;
+                    end if;
+                end if;
+            when PACKET_SIZE_S =>
+                if isReceivingData(rx)  then 
+                    read_data(rx, rx_buff);
+                    if unsigned( rx_buff ) < 300  and not endOfStream(rx) then 
+                        v_wordsLeft := rx_buff;
+                        v_state := PACKET_TYPE_S;
+                    else 
+                        v_state := IDLE_S;
+                    end if;
+                end if;
+            when PACKET_TYPE_S =>
+                if isReceivingData(rx)  then 
+                    read_data(rx, rx_buff);
+                    if rx_buff = WORD_COMMAND_C  and not endOfStream(rx) then 
+                        v_wordsLeft := rx_buff;
+                        v_state := COMMAND_TARGET_S;
+                    else 
+                        v_state := IDLE_S;
+                    end if;
+                end if;
+            when COMMAND_TARGET_S =>
+                if isReceivingData(rx)  then 
+                    read_data(rx, rx_buff );
+                    v_device_id := rx_buff;
+                    v_wordsLeft := v_wordsLeft - 1;
+                    v_state := COMMAND_ID_S;
+                    if  endOfStream(rx) then 
+                        v_state := IDLE_S;
+                    elsif rx_buff = wordScrodRevC    then 
+                        loadQB <= '0';
+                    elsif (rx_buff(31 downto 8) = wordDC) and (rx_buff(7 downto 0) /= broadcastDC) then 
+                        dc_id <= conv_integer(unsigned(rx_buff(7 downto 0)));
+                        loadQB <= '1';
+                    elsif (rx_buff(7 downto 0) = broadcastDC) then
+                        dc_id <= conv_integer(unsigned(broadcastDC)); --if broadcasting, set dc_id to "broadcast"
+                        loadQB <= '1';
+                    end if;
+                end if;
+            when COMMAND_ID_S =>
+                if isReceivingData(rx)  then 
+                    read_data(rx, rx_buff );
+                    v_wordsLeft := v_wordsLeft - 1;
+                    v_commandId  := rx_buff(23 downto 0);
+                    v_noResponse := rx_buff(31);
+                    v_state := COMMAND_TYPE_S;
+                    if  endOfStream(rx) then 
+                        v_state := IDLE_S;
+                    end if;
+                end if;
+
+            when COMMAND_TYPE_S =>
+                if isReceivingData(rx)  then 
+                    read_data(rx, rx_buff );
+                    if rx_buff = WORD_PING_C then
+                        v_state := PING_S; --Mudit
+                    elsif rx_buff = WORD_READ_C or rx_buff = WORD_WRITE_C or rx_buff = WORD_WRITE_DAC or rx_buff = WORD_READ_DATA then --added by me,  or rxData = WORD_WRITE_DAC
+                        v_state := COMMAND_DATA_S;
+                    end if;
+                    if  endOfStream(rx) then 
+                        v_state := IDLE_S;
+                    end if;
+
+                end if;
+
+            when COMMAND_DATA_S =>
+                if isReceivingData(rx)  then 
+                    read_data(rx , rx_buff);
+                    v_command := rx_buff;
+                    v_regAddr   := rx_buff(15 downto 0);
+                    v_regWrData := rx_buff(31 downto 16);
+                    regAddr   <= v_regAddr;
+                    regWrData <= v_regWrData;
+                    v_state := COMMAND_CHECKSUM_S;
+                    if  endOfStream(rx) then 
+                        v_state := IDLE_S;
+                    end if;
+
+                end if;
+
+            when READ_DATA =>
+ 
+                v_timeoutCnt1   := v_timeoutCnt1   +1;
+                    
+                if ready_to_send(tx) and isReceivingData(dc_rx) then 
+                    v_timeoutCnt1   := (others =>'0');
+                    read_data(dc_rx, rx_buff);
+                    send_data(tx ,  rx_buff);
+                    dataCount := dataCount +1;
+
+                    if dataCount = data_in_packet then 
+                        Send_end_Of_Stream(tx);
+                        dataCount := 0;
+                        packetCount := packetCount+1;
+                        if packetCount = packets then 
+                            v_state := IDLE_S;
+                        end if;
+                    end if;
+                end if;
+                if v_timeoutCnt1   = TIMEOUT_G1 then
+                    v_state := IDLE_S;
+                end if;
+ 
+
+
+        end case;
+
+    end if;
+    end process;
+
     SCRODRegComb : process(r,usrRst,rxData,rxDataValid,rxDataLast,
                            txDataReady,regRdData,regAck,wordScrodRevC,EVNT_FLAG) is
         variable v : RegType;
@@ -277,7 +749,7 @@ begin
             when IDLE_S =>
                 -- v.errFlags := (others => '0'); --Mudit
                 v.checksum := (others => '0');
-				DC_cmdRespReq <= (others => '1'); --default enable listening to DCs
+                DC_cmdRespReq <= (others => '1'); --default enable listening to DCs
                 data_flag <= '0';
                 if rxDataValid = '1' then
                     rxDataReady <= '1';
@@ -337,26 +809,25 @@ begin
                         v.state    := IDLE_S; --ERR_RESPONSE_S, Mudit
 
                         -- Target doesn't match this SCROD or broadcast or DC
-                    elsif rxData /= wordScrodRevC and
-                    rxData(31 downto 8) /= wordDC then --target must be SCROD, DC. leaving out all dev broadcast(rxData /= x"00000000" )
+                    elsif rxData /= wordScrodRevC and rxData(31 downto 8) /= wordDC then --target must be SCROD, DC. leaving out all dev broadcast(rxData /= x"00000000" )
                         -- v.errFlags := r.errFlags + ERR_BIT_DEST_C; --else error. --Mudit
                         v.state    := IDLE_S; --ERR_RESPONSE_S, Mudit
                         -- Otherwise, move on
                     else
-						if rxData = wordScrodRevC  then
-							loadQB <= '0';
-						elsif (rxData(31 downto 8) = wordDC) and (rxData(7 downto 0) /= broadcastDC) then
-							dc_id <= conv_integer(unsigned(rxData(7 downto 0)));
-							loadQB <= '1';
-						else --unused case, disallow broadcast
-							dc_id <= conv_integer(unsigned(broadcastDC)); --if broadcasting, set dc_id to "broadcast"
-							loadQB <= '1';
-						end if;
+                        if rxData = wordScrodRevC  then
+                            loadQB <= '0';
+                        elsif (rxData(31 downto 8) = wordDC) and (rxData(7 downto 0) /= broadcastDC) then
+                            dc_id <= conv_integer(unsigned(rxData(7 downto 0)));
+                            loadQB <= '1';
+                        else --unused case, disallow broadcast
+                            dc_id <= conv_integer(unsigned(broadcastDC)); --if broadcasting, set dc_id to "broadcast"
+                            loadQB <= '1';
+                        end if;
                         v.state := COMMAND_ID_S;
                     end if;
                 end if;
             when COMMAND_ID_S =>
-					--  v.errFlags := (others => '0'); --Mudit
+                    --  v.errFlags := (others => '0'); --Mudit
                 v.wordOutCnt  := (others => '0');
                 v.timeoutCnt  := (others => '0');
                 if rxDataValid = '1' then
@@ -401,7 +872,7 @@ begin
             when COMMAND_DATA_S =>
                 if rxDataValid = '1' then
                     rxDataReady <= '1';
-						  v.command   := rxData;
+                          v.command   := rxData;
                     v.checksum  := r.checksum + rxData;
                     v.regAddr   := rxData(15 downto 0);
                     v.regWrData := rxData(31 downto 16);
@@ -417,7 +888,7 @@ begin
                     end if;
                 end if;
             when COMMAND_CHECKSUM_S =>
-					--  v.errFlags := (others => '0');
+                    --  v.errFlags := (others => '0');
                 if rxDataValid = '1' then
                     rxDataReady <= '1';
                     v.wordsLeft := r.wordsLeft - 1;
@@ -489,16 +960,16 @@ begin
                 if r.noResponse = '1' then
                     v.state := IDLE_S;
                 else
-					if loadQB = '1' then
-						if dc_id /= broadcastDC then
-						-- 	if serialClkLck = "1" and trigLinkSync = "1" then --check if QBLink is up (hardcoded), earlier "1111"
-						-- 		v.checksum := (others => '0');
-						-- 		v.state    := PING_RESPONSE_S;
-						-- 	else
-						-- 		v.errFlags := r.errFlags + QBLINK_FAILURE_C;
-						-- 		v.state := ERR_RESPONSE_S;
-						-- 	end if;
-						-- else
+                    if loadQB = '1' then
+                        if dc_id /= broadcastDC then
+                        -- 	if serialClkLck = "1" and trigLinkSync = "1" then --check if QBLink is up (hardcoded), earlier "1111"
+                        -- 		v.checksum := (others => '0');
+                        -- 		v.state    := PING_RESPONSE_S;
+                        -- 	else
+                        -- 		v.errFlags := r.errFlags + QBLINK_FAILURE_C;
+                        -- 		v.state := ERR_RESPONSE_S;
+                        -- 	end if;
+                        -- else
                         --     if dc_id > num_DC+1 then 
                         --         v.errFlags := r.errFlags + QBLINK_FAILURE_C;
                         --         v.state := ERR_RESPONSE_S;
@@ -514,13 +985,13 @@ begin
                         --     end if;
                         end if;
                     else
-						v.checksum := (others => '0');
-						v.state    := PING_RESPONSE_S;
-					end if;
+                        v.checksum := (others => '0');
+                        v.state    := PING_RESPONSE_S;
+                    end if;
                 end if;
 
             when READ_S =>
-			  	v.timeoutCnt := r.timeoutCnt + 1;
+                  v.timeoutCnt := r.timeoutCnt + 1;
                 if loadQB = '1' then -- if reading DC, listen to QBLink
                     if dc_id /= broadcastDC then --IF not broadcasting to all DCs
                         DC_cmdRespReq(dc_id-1) <= '1';
@@ -552,75 +1023,75 @@ begin
                     end if; --end all cases for DC reading
                     ----------------------------------------------------
                 else  --if reading SCROD register:
-					v.regOp      := '0'; -- set Registers to read mode
-					v.regReq     := '1'; --request operation
-					if (regAck = '1') then
-						v.regRdData := regRdData;
-						v.regReq    := '0';
-						if r.noResponse = '1' then
-							v.state := IDLE_S; --CHECK_MORE_S, Mudit
-						else
-							v.checksum := (others => '0');
-							v.state    := READ_RESPONSE_S;
-						end if;
-					elsif r.timeoutCnt = TIMEOUT_G then -- if SCROD register has not acknowledged before timeout, send error to PC
-						-- v.errFlags := r.errFlags + ERR_BIT_TIMEOUT_C; --Mudit
-						v.state    := IDLE_S; --ERR_RESPONSE_S, Mudit
-					end if;
+                    v.regOp      := '0'; -- set Registers to read mode
+                    v.regReq     := '1'; --request operation
+                    if (regAck = '1') then
+                        v.regRdData := regRdData;
+                        v.regReq    := '0';
+                        if r.noResponse = '1' then
+                            v.state := IDLE_S; --CHECK_MORE_S, Mudit
+                        else
+                            v.checksum := (others => '0');
+                            v.state    := READ_RESPONSE_S;
+                        end if;
+                    elsif r.timeoutCnt = TIMEOUT_G then -- if SCROD register has not acknowledged before timeout, send error to PC
+                        -- v.errFlags := r.errFlags + ERR_BIT_TIMEOUT_C; --Mudit
+                        v.state    := IDLE_S; --ERR_RESPONSE_S, Mudit
+                    end if;
                 end if;
 
             when WRITE_S => --TEMP allow cmd interpreter to write to both SCROD and DC registers simulataneously to test dual functionality
                 v.timeoutCnt := r.timeoutCnt + 1;
-				if (loadQB = '1') and (dc_id /= broadcastDC) then --if writing to DC: wait for them to repeat correct address
-					DC_cmdRespReq(dc_id-1) <= '1';
-					if DC_RESP(15 downto 0) = r.regAddr then --write operation is successful if DC repeats address, even if simultaneous SCROD register operation fails.
-						if r.noResponse = '1' then --skip response to PC if noResponse setting is on
-							v.state := IDLE_S; --CHECK_MORE_S, Mudit
-						else
-							v.checksum := (others => '0');
-							v.state    := WRITE_RESPONSE_S;
-						end if;
-					elsif r.timeoutCnt = TIMEOUT_G then --if the DC does not repeat register before timeout, error is raised (even if SCROD register is written successfully).
-						-- v.errFlags := r.errFlags + ERR_BIT_TIMEOUT_C; --Mudit
-						v.state    := IDLE_S; --ERR_RESPONSE_S, Mudit
-					end if;
+                if (loadQB = '1') and (dc_id /= broadcastDC) then --if writing to DC: wait for them to repeat correct address
+                    DC_cmdRespReq(dc_id-1) <= '1';
+                    if DC_RESP(15 downto 0) = r.regAddr then --write operation is successful if DC repeats address, even if simultaneous SCROD register operation fails.
+                        if r.noResponse = '1' then --skip response to PC if noResponse setting is on
+                            v.state := IDLE_S; --CHECK_MORE_S, Mudit
+                        else
+                            v.checksum := (others => '0');
+                            v.state    := WRITE_RESPONSE_S;
+                        end if;
+                    elsif r.timeoutCnt = TIMEOUT_G then --if the DC does not repeat register before timeout, error is raised (even if SCROD register is written successfully).
+                        -- v.errFlags := r.errFlags + ERR_BIT_TIMEOUT_C; --Mudit
+                        v.state    := IDLE_S; --ERR_RESPONSE_S, Mudit
+                    end if;
 
-				elsif (loadQB = '1') and (dc_id = broadcastDC) then
-					DC_cmdRespReq(num_DC downto 0) <= (others => '1');
-					if (DC_RESP(15 downto 0) = r.regAddr) then
-						if r.noResponse = '1' then --skip response to PC if noResponse setting is on
-							v.state := IDLE_S; --CHECK_MORE_S, Mudit
-						else
-							v.checksum := (others => '0');
-							v.state    := WRITE_RESPONSE_S;
-						end if;
-					elsif r.timeoutCnt = TIMEOUT_G then --if the DC does not repeat register before timeout, error is raised (even if SCROD register is written successfully).
-						-- v.errFlags := r.errFlags + ERR_BIT_TIMEOUT_C; --Mudit
-						v.state    := IDLE_S; --ERR_RESPONSE_S, Mudit
+                elsif (loadQB = '1') and (dc_id = broadcastDC) then
+                    DC_cmdRespReq(num_DC downto 0) <= (others => '1');
+                    if (DC_RESP(15 downto 0) = r.regAddr) then
+                        if r.noResponse = '1' then --skip response to PC if noResponse setting is on
+                            v.state := IDLE_S; --CHECK_MORE_S, Mudit
+                        else
+                            v.checksum := (others => '0');
+                            v.state    := WRITE_RESPONSE_S;
+                        end if;
+                    elsif r.timeoutCnt = TIMEOUT_G then --if the DC does not repeat register before timeout, error is raised (even if SCROD register is written successfully).
+                        -- v.errFlags := r.errFlags + ERR_BIT_TIMEOUT_C; --Mudit
+                        v.state    := IDLE_S; --ERR_RESPONSE_S, Mudit
                     end if;
                     -----------------------------
-				else
-					v.regOp      := '1'; --enable write to SCROD Register
-					v.regReq     := '1'; --start writing
-					if (regAck = '1') then --if not reading DC, make sure SCROD register write was successful.
+                else
+                    v.regOp      := '1'; --enable write to SCROD Register
+                    v.regReq     := '1'; --start writing
+                    if (regAck = '1') then --if not reading DC, make sure SCROD register write was successful.
                         v.regReq    := '0';
-						if r.noResponse = '1' then
-							v.state := IDLE_S; --CHECK_MORE_S, Mudit
-						else
-							v.checksum := (others => '0');
-							v.state    := WRITE_RESPONSE_S;
-						end if;
-					elsif r.timeoutCnt = TIMEOUT_G then
-						-- v.errFlags := r.errFlags + ERR_BIT_TIMEOUT_C; --Mudit
-						v.state    := IDLE_S; --ERR_RESPONSE_S, Mudit
-					end if;
+                        if r.noResponse = '1' then
+                            v.state := IDLE_S; --CHECK_MORE_S, Mudit
+                        else
+                            v.checksum := (others => '0');
+                            v.state    := WRITE_RESPONSE_S;
+                        end if;
+                    elsif r.timeoutCnt = TIMEOUT_G then
+                        -- v.errFlags := r.errFlags + ERR_BIT_TIMEOUT_C; --Mudit
+                        v.state    := IDLE_S; --ERR_RESPONSE_S, Mudit
+                    end if;
                 end if;
 
             when READ_RESPONSE_S =>
-				DC_cmdRespReq <= (others =>'0');
+                DC_cmdRespReq <= (others =>'0');
                 if regAck = '0' and r.regReq = '0' then
                     v.txDataValid := '1';
-					if (loadQB = '0')  then
+                    if (loadQB = '0')  then
                         case conv_integer(r.wordOutCnt) is
                             when 0 => v.txData := WORD_HEADER_C;
                             when 1 => v.txData := x"00000006";
@@ -636,8 +1107,8 @@ begin
                         end case;
 
 
-					elsif	(dc_id /= broadcastDC) and (loadQB = '1') then
-						case conv_integer(r.wordOutCnt) is
+                    elsif	(dc_id /= broadcastDC) and (loadQB = '1') then
+                        case conv_integer(r.wordOutCnt) is
                             when 0 => v.txData := WORD_HEADER_C;
                             when 1 => v.txData := x"00000006";
                             when 2 => v.txData := WORD_ACK_C;
@@ -655,10 +1126,10 @@ begin
                         v.checksum   := r.checksum + v.txData;
                         v.wordOutCnt := r.wordOutCnt + 1;
                     end if;
-				end if;
+                end if;
 
             when WRITE_RESPONSE_S =>
-				DC_cmdRespReq <= (others=>'0');
+                DC_cmdRespReq <= (others=>'0');
                 if regAck = '0' and r.regReq = '0' then
                     v.txDataValid := '1';
                     case conv_integer(r.wordOutCnt) is
@@ -699,58 +1170,24 @@ begin
                     v.wordOutCnt := r.wordOutCnt + 1;
                 end if;
 
-            -- when ERR_RESPONSE_S =>
-            --     if txDataReady = '1' then
-            --         v.checksum   := r.checksum + r.txData;
-            --         v.wordOutCnt := r.wordOutCnt + 1;
-            --     end if;
-            --     v.txDataValid := '1';
-            --     case conv_integer(r.wordOutCnt) is
-            --         when 0 => v.txData := WORD_HEADER_C;
-            --         when 1 => v.txData := x"00000005";
-            --         when 2 => v.txData := WORD_ERR_C;
-            --         when 3 => v.txData := r.deviceID; --wordScrodRevC;            -- Why not make it to r.deviceID ??
-            --         when 4 => v.txData := x"00" & r.commandId;
-            --         when 5 => v.txData := r.errFlags;
-            --         when 6 => v.txData     := r.checksum;
-            --         v.txDataLast := '1';
-            --         v.state      := DUMP_S;
-            --     when others => v.txData := (others => '1');
-            --     end case;
 
-            -- when CHECK_MORE_S =>
-			-- 	loadQB <= '0';
-            --     if r.wordsLeft /= 1 then --and r.wordsLeft /= 0 then   --Added and condition on 15th Oct(Shivang)
-            --         v.state := COMMAND_ID_S;
-            --     else
-            --         v.state := PACKET_CHECKSUM_S;
-            --     end if;
-
-            -- when PACKET_CHECKSUM_S =>
-            --     -- Not checking this for now...
-            --     v.state := DUMP_S;
-            -- when DUMP_S =>
-            --     rxDataReady <= '1';
-            --     if rxDataLast = '1' then
-            --         v.state := IDLE_S;
-            --     end if; --Mudit
 
             when others =>
                 v.state := IDLE_S;
-				DC_cmdRespReq <= (others => '1');
+                DC_cmdRespReq <= (others => '1');
         end case;
                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               
         -- Reset logic
         if (usrRst = '1') then
             v := REG_INIT_C;
         end if;
-		--Event Handling
-		-- if EVNT_FLAG = '1' then
-		-- 	v := REG_INIT_C;
-		-- 	QB_RdEn <= (others => '0');
-		-- else
+        --Event Handling
+        -- if EVNT_FLAG = '1' then
+        -- 	v := REG_INIT_C;
+        -- 	QB_RdEn <= (others => '0');
+        -- else
         QB_RdEn <= DC_cmdRespReq;
-		-- end if;
+        -- end if;
         -- Register interfaces
         regAddr     <= r.regAddr;
         regWrData   <= r.regWrData;
@@ -764,38 +1201,7 @@ begin
 
     end process;
 
-    -- seq : process (usrClk) is
-    -- begin
-    --     if (rising_edge(usrClk)) then
-    --         r <= rin after GATE_DELAY_G;
-	-- 		--    t <= tin after GATE_DELAY_G;
-	-- 		-- if EVNT_FLAG = '0' then
-    --         if start_load = '0' then
-    --             if r.state = COMMAND_DATA_S and loadQB = '1' then
-    --                 QB_loadReg(0) <= r.commandType;
-    --                 start_load <= '1'; --by Mudit, earlier zero
-    --             elsif r.state = COMMAND_CHECKSUM_S and loadQB = '1' then
-    --                 QB_loadReg(1) <= r.command;
-    --                 start_load <= '1';
-    --             -- elsif r.state = CHECK_MORE_S or r.state = ERR_RESPONSE_S then
-    --             -- 	start_load <= '0'; --Mudit
-    --             else 
-    --                 start_load <= '0';
-    --             end if;
-            
-    --         else
-                
-    --             if dc_ack = '1' then
-    --                 start_load <= '0';
-    --             end if;
-    --         end if;
-				
-	-- 		-- else
-	-- 		-- 	start_load <= '0';
-	-- 		-- end if;
-	-- 	end if;
-    -- end process;
-
+ 
 
     seq1 : process (usrClk) is
     begin
@@ -817,92 +1223,20 @@ begin
             if dc_ack1 = '1' then
                 start_load1 <= '0';
             end if;
-		end if;
+        end if;
     end process;
 
-	gtp_MUX : process(r) is -- EVNT_FLAG,t,
-	begin
-		-- if EVNT_FLAG = '0' then
-            -- Outputs to ports
         txData      <= r.txData;
         txDataValid <= r.txDataValid;
         txDataLast  <= r.txDataLast;
 
-		-- else
-		-- 	txData      <= t.txData;
-		-- 	txDataValid <= t.txDataValid;
-		-- 	txDataLast  <= t.txDataLast;
-		-- end if;
-	end process;
-
-	-- SendTrigger : process(EVNT_FLAG, t) is
-
-    --     variable g : RegType := REG_INIT_C;
-    -- begin
-    --     g := t;
-
-    --     -- Resets for pulsed outputs
-    --     g.txDataValid := '0';
-	-- 	case(t.state) is
-	-- 		when IDLE_S =>
-    --             g.checksum := (others => '0');
-    --             g.wordOutCnt := (others => '0');
-    --             if EVNT_FLAG = '1' then
-    --                 g.state := SENDTRIG_s;
-    --             else
-    --                 g.state := IDLE_S;
-    --             end if;
-
-	-- 		when SENDTRIG_S =>
-	-- 			g.txDataValid := '1';
-	-- 			if conv_integer(unsigned(g.wordOutCnt)) <= num_DC then
-    --                 g.wordOutCnt := t.wordOutCnt + 1;
-	-- 				g.txDataValid := '1';
-	-- 				g.txData := DC_RESP;
-	-- 				g.state := SENDTRIG_S;
-	-- 				if conv_integer(unsigned(g.wordOutCnt)) = num_DC then
-	-- 					g.txdatalast := '1';
-	-- 				else
-	-- 					g.txdatalast := '0';
-	-- 				end if;
-
-	-- 			elsif conv_integer(unsigned(g.wordOutCnt)) > num_DC then
-	-- 				g.wordOutCnt := (others => '0');
-	-- 				g.txDataValid := '0';
-	-- 				g.txData := (others => '0');
-	-- 				g.state := IDLE_S;
-	-- 			end if;
-
-	-- 		when others =>
-	-- 			g.state := IDLE_S;
-    --     end case;
-    --     tin <= g;
-    -- end process;
-
-	-- QBload_reg : process (dataClk, start_load1) is
-	-- begin
-    --     if(rising_edge(dataClk)) then
-    --         if start_load = '1' then
-	-- 				dc_ack <= '1';
-    --             if dc_id = 10 then
-    --                 QB_WrEn <= (others =>'1');
-    --             else
-    --                 QB_WrEn(dc_id-1) <= '1';
-    --             end if;
-    --             QB_loadReg(1) <= QB_loadReg(0);
-    --         else
-	-- 				dc_ack <= '0';
-    --             QB_WrEn <= (others =>'0');
-    --         end if;
-    --     end if;
-    -- end process;
 
 
-	QBload_reg1 : process (dataClk) is
-	begin
+    QBload_reg1 : process (dataClk) is
+    begin
         if(rising_edge(dataClk)) then
             if start_load = '1' then
-				dc_ack <= '1';
+                dc_ack <= '1';
                 if dc_id = 10 then
                     QB_WrEn <= (others =>'1');
                 else
@@ -911,12 +1245,12 @@ begin
                 QB_loadReg(2) <= QB_loadReg(0);
                 -- start_load <= '0';
             -- else
-			-- 	dc_ack <= '0';
+            -- 	dc_ack <= '0';
             --     QB_WrEn <= (others =>'0');
             -- end if;
 
             elsif start_load1 = '1' and start_load = '0' then
-				dc_ack1 <= '1';
+                dc_ack1 <= '1';
                 if dc_id = 10 then
                     QB_WrEn <= (others =>'1');
                 else
@@ -925,7 +1259,7 @@ begin
                 QB_loadReg(2) <= QB_loadReg(1);
                 -- start_load1 <= '0';
             else
-				dc_ack1 <= '0';
+                dc_ack1 <= '0';
                 dc_ack <= '0';
                 QB_WrEn <= (others =>'0');
             end if;    
